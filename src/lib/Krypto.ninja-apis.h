@@ -729,6 +729,36 @@ namespace ₿ {
         });
       };
   };
+  class GwHuobi: public GwApiREST {
+    public:
+      GwHuobi()
+      {
+        http   = "https://api.huobi.pro";
+        randId = Random::int46Id;
+      };
+      const json handshake() override {
+        const json reply = Curl::xfer(http + "/public?command=returnTicker")
+                             .value(quote + "_" + base, json::object());
+        return {
+          {"minTick", reply.empty()
+                        ? 0
+                        : 1e-8     },
+          {"minSize", 1e-3         },
+          {  "reply", reply        }
+        };
+      };
+    protected:
+      static const json xfer(const string &url, const string &post, const string &h1, const string &h2) {
+        return Curl::request(url, [&](CURL *curl) {
+          struct curl_slist *h_ = nullptr;
+          h_ = curl_slist_append(h_, "Content-Type: application/x-www-form-urlencoded");
+          h_ = curl_slist_append(h_, ("Key: " + h1).data());
+          h_ = curl_slist_append(h_, ("Sign: " + h2).data());
+          curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h_);
+          curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post.data());
+        });
+      };
+  };
 }
 
 #endif

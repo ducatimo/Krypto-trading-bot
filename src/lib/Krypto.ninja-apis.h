@@ -734,6 +734,7 @@ namespace ₿ {
       GwHuobi()
       {
         http   = "https://api.huobi.pro";
+        ws     = "wss://api.huobi.pro/ws";
         randId = Random::int46Id;
       };
       const json handshake() override {
@@ -748,12 +749,14 @@ namespace ₿ {
         };
       };
     protected:
-      static const json xfer(const string &url, const string &post, const string &h1, const string &h2) {
+      static const json xfer(const string &url, const string &post, const string &h1, const string &h2, const string &h3, const string &h4) {
         return Curl::request(url, [&](CURL *curl) {
           struct curl_slist *h_ = nullptr;
           h_ = curl_slist_append(h_, "Content-Type: application/x-www-form-urlencoded");
-          h_ = curl_slist_append(h_, ("Key: " + h1).data());
-          h_ = curl_slist_append(h_, ("Sign: " + h2).data());
+          h_ = curl_slist_append(h_, ("AccessKeyId: " + h1).data());
+          h_ = curl_slist_append(h_, ("SignatureMethod: " + h2).data());
+          h_ = curl_slist_append(h_, ("SignatureVersion: " + h3).data());
+          h_ = curl_slist_append(h_, ("Timestamp: " + h4).data());
           curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h_);
           curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post.data());
         });

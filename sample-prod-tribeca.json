@@ -1,0 +1,38 @@
+{
+    "TRIBECA_MODE": "prod",
+    "EXCHANGE": "Okex",
+    "TradedPair": "ETH/USDT",
+    "MongoDbUrl": "mongodb://127.0.0.1:27017/tribeca",
+    "WebClientUsername": "admin",
+    "WebClientPassword": "admin",
+    "WebClientListenPort": "3000",
+    "ShowAllOrders": "false",
+    "MinTickIncrement": 0.0001,
+
+    "HitBtcPullUrl": "http://api.hitbtc.com",
+    "HitBtcOrderEntryUrl": "wss://api.hitbtc.com:8080",
+    "HitBtcMarketDataUrl": "ws://api.hitbtc.com:80",
+    "HitBtcSocketIoUrl": "https://api.hitbtc.com:8081",
+    "HitBtcApiKey": "NULL",
+    "HitBtcSecret": "NULL",
+    "HitBtcOrderDestination": "HitBtc",
+
+    "CoinbaseRestUrl": "https://api.gdax.com",
+    "CoinbaseWebsocketUrl": "wss://ws-feed.gdax.com",
+    "CoinbasePassphrase": "NULL",
+    "CoinbaseApiKey": "NULL",
+    "CoinbaseSecret": "NULL",
+    "CoinbaseOrderDestination": "Coinbase",
+
+    "OkCoinWsUrl": "wss://real.okex.com:10442/ws/v3",
+    "OkCoinHttpUrl": "https://www.okex.com",
+    "OkCoinApiKey": "fa58def5-37b8-44a1-bb88-2e0ee3decf29",
+    "OkCoinSecretKey": "757781DF75CCC9AA65C2D24A6F5353E0",
+    "OkCoinPassphrase": "coffee",
+    "OkCoinOrderDestination": "Okex",
+
+    "BitfinexHttpUrl": "https://api.bitfinex.com/v1",
+    "BitfinexKey": "NULL",
+    "BitfinexSecret": "NULL",
+    "BitfinexOrderDestination": "Bitfinex"
+}

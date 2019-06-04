@@ -57,8 +57,10 @@ Runs on the latest node.js (v7.8 or greater). Persistence is acheived using mong
     3. `okcoin` - Websocket.Ensure the OKCoin-specific properties have been set with your correct account information. Production environment only.
     
     4. `bitfinex` REST API only. Ensure the Bitfinex-specific properties have been filled out. REST API is not suitable to millisecond latency trading. Production environment only.
+
+    5. `huobi` WebSocket + REST API.  Ensure the Huobi-specific properties have been set with your correct account information if you are using the dev or prod environment.
     
-    5. `null` - Test in-memory exchange. No exchange-specific config needed.
+    6. `null` - Test in-memory exchange. No exchange-specific config needed.
     
   * TRIBECA_MODE
   

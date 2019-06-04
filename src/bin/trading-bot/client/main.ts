@@ -1042,7 +1042,10 @@ class ClientComponent implements OnInit {
                 ? 'https://poloniex.com/exchange'
                 : (this.exchange_name=='FCOIN'
                   ? 'https://exchange.fcoin.com/ex/main/'+this.baseCurrency + '-' + this.quoteCurrency
-                  : null
+                  : (this.exchange_name=='HUOBI'
+                    ? 'https://api.huobi.com/market/trade?symbol='+this.baseCurrency.toLocaleLowerCase() + this.quoteCurrency.toLocaleLowerCase()
+                    : null
+                  )
                 )
               )
             )
@@ -1063,7 +1066,10 @@ class ClientComponent implements OnInit {
                 ? 'https://poloniex.com/tradeHistory'
                 : (this.exchange_name=='FCOIN'
                     ? 'https://exchange.fcoin.com/orders'
-                    : null
+                    : (this.exchange_name=='HUOBI'
+                    ? 'https://api.huobi.com/market/history/trade?symbol='+this.baseCurrency.toLocaleLowerCase() + this.quoteCurrency.toLocaleLowerCase()
+                        : null
+                    )
                 )
               )
             )

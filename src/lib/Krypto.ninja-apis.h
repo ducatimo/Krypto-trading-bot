@@ -738,8 +738,7 @@ namespace ₿ {
         randId = Random::int46Id;
       };
       const json handshake() override {
-        const json reply = Curl::xfer(http + "/public?command=returnTicker")
-                             .value(quote + "_" + base, json::object());
+        const json reply = Curl::xfer(http + "/0/public/AssetPairs?pair=" + base + quote);
         return {
           {"minTick", reply.empty()
                         ? 0

@@ -88,7 +88,7 @@ export function fromCurrency(c: Currency): string | undefined {
 
 export enum GatewayType { MarketData, OrderEntry, Position }
 export enum ConnectivityStatus { Connected, Disconnected }
-export enum Exchange { Null, HitBtc, Okex, AtlasAts, BtcChina, Coinbase, Bitfinex }
+export enum Exchange { Null, HitBtc, Okex, AtlasAts, BtcChina, Coinbase, Bitfinex, Huobi }
 export enum Side { Bid, Ask, Unknown }
 export enum OrderType { Limit, Market }
 export enum TimeInForce { IOC, FOK, GTC }

@@ -35,6 +35,7 @@ import Coinbase = require("./gateways/coinbase");
 import NullGw = require("./gateways/nullgw");
 import OkCoin = require("./gateways/okcoin");
 import Bitfinex = require("./gateways/bitfinex");
+import Huobi = require("./gateways/huobi");
 
 import Utils = require("./utils");
 import Config = require("./config");
@@ -200,6 +201,7 @@ const liveTradingSetup = (): SimulationClasses => {
             case "okex": return Models.Exchange.Okex;
             case "null": return Models.Exchange.Null;
             case "bitfinex": return Models.Exchange.Bitfinex;
+            case "huobi": return Models.Exchange.Huobi;
             default: throw new Error("unknown configuration env variable EXCHANGE " + ex);
         }
     };
@@ -213,6 +215,7 @@ const liveTradingSetup = (): SimulationClasses => {
             case Models.Exchange.Okex: return OkCoin.createOkCoin(config, pair);
             case Models.Exchange.Null: return NullGw.createNullGateway(config, pair);
             case Models.Exchange.Bitfinex: return Bitfinex.createBitfinex(timeProvider, config, pair);
+            case Models.Exchange.Huobi: return Huobi.createHuobi(config, pair);
             default: throw new Error("no gateway provided for exchange " + exchange);
         }
     };

@@ -84,9 +84,33 @@ interface Cancel extends SignedMessage {
     client_oid?: string;
 }
 
+
+/*
+{
+  "status": "ok",
+  "data": {
+    "id": 59378,
+    "symbol": "ethusdt",
+    "account-id": 100009,
+    "amount": "10.1000000000",
+    "price": "100.1000000000",
+    "created-at": 1494901162595,
+    "type": "buy-limit",
+    "filled-amount": "10.1000000000",
+    "filled-cash-amount": "1011.0100000000",
+    "filled-fees": "0.0202000000",
+    "finished-at": 1494901400468,
+    "source": "api",
+    "state": "filled",
+    "canceled-at": 0
+  }
+}
+*/
+
+
 interface HuobiOrderStatus {
-    order_id: string,
-    client_oid: string,
+    id: string,
+    "account-id": string,
     price: string,
     size: string,
     notional: string,

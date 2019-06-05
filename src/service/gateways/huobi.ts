@@ -1,11 +1,10 @@
 /// <reference path="../utils.ts" />
 /// <reference path="../../common/models.ts" />
 /// <reference path="nullgw.ts" />
+///<reference path="../config.ts"/>
+///<reference path="../utils.ts"/>
 ///<reference path="../interfaces.ts"/>
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
-import ws = require("ws");
 import Q = require("q");
 import crypto = require("crypto");
 import request = require("request");
@@ -20,489 +19,265 @@ import Interfaces = require("../interfaces");
 import moment = require("moment");
 import _ = require("lodash");
 import log from "../logging";
-import crc32 = require("crc-32");
-import { Socket } from "net";
-import pako = require("pako");
+var shortId = require("shortid");
+var Deque = require("collections/deque");
 
-let shortId = require("shortid");
-
-
-interface HuobiMessageIncomingMessage {
-    channel?: string;
-    table?: string;
-    data?: any;
-    event?: string;
-    action?: string;
-    success?: boolean;
-}
-
-//https://huobi.readme.io/reference#get_market-depth
-interface HuobiDepthMessage {
-    asks: [string, string][];
-    bids: [string, string][];
-    ts: string;
-    checksum: number;
-    instrument_id: string;
-}
-
-interface HuobiTradeMessage {
-    trade_id: string;
-    instrument_id: string;
+interface HuobiMarketTrade {
+    tid: number;
+    timestamp: number;
     price: string;
-    side: string;
-    size: string;
+    amount: string;
+    exchange: string;
+    type: string;
+}
+
+interface HuobiMarketLevel {
+    price: string;
+    amount: string;
     timestamp: string;
 }
 
-interface OrderAck {
-    result?: boolean; // true or false
-    order_id?: string;
-    client_oid?: string;
-    code?: number;
-    message: string;
+interface HuobiOrderBook {
+    bids: HuobiMarketLevel[];
+    asks: HuobiMarketLevel[];
 }
 
-interface SignedMessage {
-    api_key?: string;
-    sign?: string;
+function decodeSide(side: string) {
+    switch (side) {
+        case "buy": return Models.Side.Bid;
+        case "sell": return Models.Side.Ask;
+        default: return Models.Side.Unknown;
+    }
 }
 
-interface Order extends SignedMessage {
-    client_oid: string,
-    type: string,
-    side: string,
-    instrument_id: string;
-    margin_trading?: Int8Array,
-    price?: string;
-    size?: string;
-    notional?: string;
+function encodeSide(side: Models.Side) {
+    switch (side) {
+        case Models.Side.Bid: return "buy";
+        case Models.Side.Ask: return "sell";
+        default: return "";
+    }
 }
 
-interface Cancel extends SignedMessage {
-    order_id?: string;
-    instrument_id: string;
-    client_oid?: string;
-}
-
-
-/*
-{
-  "status": "ok",
-  "data": {
-    "id": 59378,
-    "symbol": "ethusdt",
-    "account-id": 100009,
-    "amount": "10.1000000000",
-    "price": "100.1000000000",
-    "created-at": 1494901162595,
-    "type": "buy-limit",
-    "filled-amount": "10.1000000000",
-    "filled-cash-amount": "1011.0100000000",
-    "filled-fees": "0.0202000000",
-    "finished-at": 1494901400468,
-    "source": "api",
-    "state": "filled",
-    "canceled-at": 0
-  }
-}
-*/
-
-
-interface HuobiOrderStatus {
-    id: string,
-    "account-id": string,
-    price: string,
-    size: string,
-    notional: string,
-    instrument_id: string,
-    side: string,
-    type: string,
-    timestamp: string,
-    filled_size: string,
-    filled_notional: string,
-    status: string,
-    margin_trading: string
-}
-
-interface SubscriptionRequest extends SignedMessage { }
-
-class HuobiWebsocket {
-
-    send = <T>(operation: string, args: any, cb?: () => void) => {
-        let subsReq: any = { op: operation };
-        if (args !== null) subsReq.args = args;
-        this._ws.send(JSON.stringify(subsReq), (e: Error) => {
-            if (!e && cb) cb();
-        });
+function encodeTimeInForce(tif: Models.TimeInForce, type: Models.OrderType) {
+    if (type === Models.OrderType.Market) {
+        return "exchange market";
     }
-
-    login = (signer: HuobiMessageSigner, cb?: () => void) => {
-        let timestamp = (Date.now() / 1000).toString();
-        let loginChannel = [signer.apiKey,
-            timestamp,
-            signer.ComputeHmac256(timestamp + "GET" + "/users/self/verify")
-        ];
-        this.send("login", loginChannel);
-        this._loginHandlers[shortId.generate()] = cb;
+    else if (type === Models.OrderType.Limit) {
+        if (tif === Models.TimeInForce.FOK) return "exchange fill-or-kill";
+        if (tif === Models.TimeInForce.GTC) return "exchange limit";
     }
-
-    setHandler = <T>(channel: string, handler: (newMsg: Models.Timestamped<T>) => void) => {
-        this._handlers[channel] = handler;
-    }
-
-    private onMessage = (raw: any) => {
-        try {
-            if (!(typeof raw === 'string')) raw = pako.inflateRaw(raw, { to: 'string' });
-            // this._log.info("Okex websocket on message!");
-            this.resetTimer();
-            let t = Utils.date();
-
-            if (typeof raw !== "undefined" && raw === this._heartbeatPong) return;
-            let msg: HuobiMessageIncomingMessage = JSON.parse(raw);
-            if (typeof msg.event !== "undefined" && msg.event == "subscribe") return;
-            if (typeof msg.event !== "undefined" && msg.event == "unsubscribe") {
-                setTimeout(() => { this.send("subscribe", [msg.channel]); }, 1000);
-                return;
-            }
-            if (typeof msg.event !== "undefined" && msg.event == "login") {
-                if (!msg.success) this._log.warn("Unsuccessful login!", msg);
-                else {
-                    this.LoggedIn = true;
-                    this._log.info("Successfully login!", msg);
-                    _.forEach(this._loginHandlers, handler => {
-                        handler();
-                        this._log.info("calling handler!");
-                    });
-                }
-                return;
-            }
-
-            if (typeof msg.table !== "undefined" && msg.data !== "undefined" && msg.data.length > 0) {
-                let handler: (x: Models.Timestamped<any>) => void;
-
-                if (msg.table == "spot/depth" && msg.action === "update") {
-                    handler = this._handlers["spot/depthUpdate"];
-                } else if (msg.table == "spot/depth" && msg.action === "partial") {
-                    handler = this._handlers["spot/depth"];
-                } else if (msg.table == "spot/trade") {
-                    handler = this._handlers["spot/trade"];
-                } else if (msg.table == "spot/order")
-                    handler = this._handlers["spot/order"];
-
-                if (typeof handler === "undefined") {
-                    this._log.warn("Got message on unknown topic", msg);
-                    return;
-                }
-                if (msg.table == "spot/depth")
-                    handler(new Models.Timestamped<HuobiDepthMessage>(msg.data[0], t));
-                if (msg.table == "spot/trade")
-                    handler(new Models.Timestamped<HuobiTradeMessage[]>(msg.data, t));
-                if (msg.table == "spot/order")
-                    handler(new Models.Timestamped<HuobiOrderStatus[]>(msg.data, t));
-                return;
-            }
-        }
-        catch (e) {
-            this._log.error(e, "Error parsing msg %o", raw);
-            throw e;
-        }
-    };
-
-    private onOpen = () => {
-        this._log.info("Huobi websocket on open!");
-        this.ConnectChanged.trigger(Models.ConnectivityStatus.Connected);
-        this.initTimer();
-    }
-    private onClose = (code: number, message: string) => {
-        this._log.info("Huobi websocket on close! code: " + code + +"message :" + message);
-        this._ws = undefined;
-        if (this._interval) {
-            clearInterval(this._interval);
-            this._interval = null;
-        }
-        this.ConnectChanged.trigger(Models.ConnectivityStatus.Disconnected);
-    }
-
-    private initTimer = () => {
-        this._interval = setInterval(() => { if (this._ws) { this._ws.send(this._heartbeatPing); } }, 25000);
-    }
-
-    private resetTimer = () => {
-        if (this._interval) {
-            clearInterval(this._interval);
-            this._interval = null;
-            this.initTimer();
-        }
-    }
-
-    private close = () => {
-        if (this._ws) {
-            console.log(`Closing websocket connection...`);
-            this._ws.close();
-            if (this._interval) {
-                clearInterval(this._interval);
-                this._interval = null;
-            }
-            this._ws = undefined;
-        }
-    }
-
-    ConnectChanged = new Utils.Evt<Models.ConnectivityStatus>();
-    LoggedIn: boolean = false;
-    private _heartbeatPing = "ping";
-    private _heartbeatPong = "pong";
-    private _log = log("tribeca:gateway:HuobiWebsocket");
-    private _handlers: { [channel: string]: (newMsg: Models.Timestamped<any>) => void } = {};
-    private _loginHandlers: { [rid: string]: () => void } = {};
-
-    private _ws: ws;
-    private _interval?: NodeJS.Timer | null;
-
-    constructor(config: Config.IConfigProvider) {
-        let okWs = config.GetString("HuobiWsUrl");
-        this._ws = new ws(okWs);
-        this._log.info({ "HuobiWsUrl": okWs }, "Constructing HuobiWebsocket!");
-        this._ws.on("open", () => { this.onOpen(); });
-        this._ws.on("message", msg => { this.onMessage(msg); });
-        this._ws.on("close", (code, message) => { this.onClose(code, message); });
-    }
+    throw new Error("unsupported tif " + Models.TimeInForce[tif] + " and order type " + Models.OrderType[type]);
 }
 
 class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
     ConnectChanged = new Utils.Evt<Models.ConnectivityStatus>();
 
+    private _since: number = null;
     MarketTrade = new Utils.Evt<Models.GatewayMarketTrade>();
-    private onTrade = (trades: Models.Timestamped<HuobiTradeMessage[]>) => {
+    private onTrades = (trades: Models.Timestamped<HuobiMarketTrade[]>) => {
         _.forEach(trades.data, trade => {
-            let px = parseFloat(trade.price);
-            let amt = parseFloat(trade.size);
-            let side = trade.side === "sell" ? Models.Side.Ask : Models.Side.Bid; // is this the make side?
-            let mt = new Models.GatewayMarketTrade(px, amt, trades.time, trades.data.length > 0, side);
+            var px = parseFloat(trade.price);
+            var sz = parseFloat(trade.amount);
+            var time = moment.unix(trade.timestamp).toDate();
+            var side = decodeSide(trade.type);
+            var mt = new Models.GatewayMarketTrade(px, sz, time, this._since === null, side);
             this.MarketTrade.trigger(mt);
         });
+
+        this._since = moment().unix();
     };
 
-    // TODO: Sort order?
+    private downloadMarketTrades = () => {
+        var qs = { timestamp: this._since === null ? moment.utc().subtract(60, "seconds").unix() : this._since };
+        this._http
+            .get<HuobiMarketTrade[]>("trades/" + this._symbolProvider.symbol, qs)
+            .then(this.onTrades)
+            .done();
+    };
+
+    private static ConvertToMarketSide(level: HuobiMarketLevel): Models.MarketSide {
+        return new Models.MarketSide(parseFloat(level.price), parseFloat(level.amount));
+    }
+
+    private static ConvertToMarketSides(level: HuobiMarketLevel[]): Models.MarketSide[] {
+        return _.map(level, HuobiMarketDataGateway.ConvertToMarketSide);
+    }
+
     MarketData = new Utils.Evt<Models.Market>();
-    private _market: Models.Market = null;
-    private static GetLevel = (n: [string, string, string]): Models.MarketSide => new Models.MarketSide(parseFloat(n[0]), parseFloat(n[1]));
-    private onDepth = (depth: Models.Timestamped<HuobiDepthMessage>) => {
-        let depthData = depth.data;
-        let bids = _(depthData.bids).map(HuobiMarketDataGateway.GetLevel).value();
-        let asks = _(depthData.asks).map(HuobiMarketDataGateway.GetLevel).value();
-        this._market = new Models.Market(bids, asks, depth.time);
-        this.MarketData.trigger(this._market);
+    private onMarketData = (book: Models.Timestamped<HuobiOrderBook>) => {
+        var bids = HuobiMarketDataGateway.ConvertToMarketSides(book.data.bids);
+        var asks = HuobiMarketDataGateway.ConvertToMarketSides(book.data.asks);
+        this.MarketData.trigger(new Models.Market(bids, asks, book.time));
     };
 
-    private checksum = (bids: Models.MarketSide[], asks: Models.MarketSide[], c: number) => {
-        if (bids == null || asks == null) return false;
-        const buff = [];
-        for (let i = 0; i < 25; i++) {
-            if (bids[i]) {
-                const bid = bids[i];
-                buff.push(bid.price);
-                buff.push(bid.size);
-            }
-            if (asks[i]) {
-                const ask = asks[i];
-                buff.push(ask.price);
-                buff.push(ask.size);
-            }
-        }
-        let checkString = buff.join(":");
-        const checksum = crc32.str(checkString);
-        return (checksum === c);
-    }
-
-    private merge = (update: Models.MarketSide[], origin: Models.MarketSide[], sort: number): Models.MarketSide[] => {
-        let ret: Models.MarketSide[] = [];
-        let ul = update.length;
-        let ol = origin.length;
-        let loop = ul + ol;
-        for (let u = 0, o = 0; u < loop && o < loop; u++ , o++) {
-            if (u < ul && o < ol) {
-                if (update[u].price * sort > origin[o].price * sort) {
-                    if (update[u].size > 0) { ret.push(update[u]); o--; }
-                } else if (update[u].price * sort < origin[o].price * sort) {
-                    if (origin[o].size > 0) { ret.push(origin[o]); u--; }
-                } else if (update[u].size > 0) ret.push(update[u]);
-            } else if (u >= ul && o < ol) {
-                if (origin[o].size > 0) ret.push(origin[o]);
-            } else if (u < ul && o >= ol) {
-                if (update[u].size > 0) ret.push(update[u]);
-            } else break;
-        }
-        return ret;
-    }
-
-    private onDepthUpdate = (depth: Models.Timestamped<HuobiDepthMessage>) => {
-        if (depth == null || depth == undefined) {
-            let depthChannel = ["spot/depth:" + this._symbolProvider.symbol];
-            this._socket.send("unsubscribe", depthChannel);
-            return;
-        }
-        let depthData = depth.data;
-        let bidsUpdate = _(depthData.bids).map(HuobiMarketDataGateway.GetLevel).value();
-        let asksUpdate = _(depthData.asks).map(HuobiMarketDataGateway.GetLevel).value();
-
-        let newBids: Models.MarketSide[] = this.merge(bidsUpdate, this._market.bids, 1);
-        let newAsks: Models.MarketSide[] = this.merge(asksUpdate, this._market.asks, -1);
-
-        if (this.checksum(newBids, newAsks, depthData.checksum)) {
-            let mkt = new Models.Market(newBids, newAsks, depth.time);
-            this.MarketData.trigger(mkt);
-            this._market = mkt;
-        } else {
-            let depthChannel = ["spot/depth:" + this._symbolProvider.symbol];
-            this._socket.send("unsubscribe", depthChannel);
-        }
+    private downloadMarketData = () => {
+        this._http
+            .get<HuobiOrderBook>("book/" + this._symbolProvider.symbol, { limit_bids: 5, limit_asks: 5 })
+            .then(this.onMarketData)
+            .done();
     };
-    private _log = log("tribeca:gateway:Huobi");
-    constructor(private _socket: HuobiWebsocket, private _symbolProvider: HuobiSymbolProvider) {
 
-        let depthChannel = ["spot/depth:" + _symbolProvider.symbol];
-        let tradesChannel = ["spot/trade:" + _symbolProvider.symbol];
+    constructor(
+        timeProvider: Utils.ITimeProvider,
+        private _http: HuobiHttp,
+        private _symbolProvider: HuobiSymbolProvider) {
 
-        _socket.setHandler("spot/depth", this.onDepth);
-        _socket.setHandler("spot/depthUpdate", this.onDepthUpdate);
-        _socket.setHandler("spot/trade", this.onTrade);
-        // Note：_socket.ConnectChanged VS. this.ConnectChanged
-        _socket.ConnectChanged.on(cs => {
-            this.ConnectChanged.trigger(cs);
-            if (cs == Models.ConnectivityStatus.Connected) {
-                _socket.send("subscribe", depthChannel);
-                _socket.send("subscribe", tradesChannel);
-            } else {
-                //TODO:
-            }
-        });
+        timeProvider.setInterval(this.downloadMarketData, moment.duration(5, "seconds"));
+        timeProvider.setInterval(this.downloadMarketTrades, moment.duration(15, "seconds"));
+
+        this.downloadMarketData();
+        this.downloadMarketTrades();
+
+        _http.ConnectChanged.on(s => this.ConnectChanged.trigger(s));
     }
+}
+
+interface RejectableResponse {
+    message: string;
+}
+
+interface HuobiNewOrderRequest {
+    symbol: string;
+    amount: string;
+    price: string; //Price to buy or sell at. Must be positive. Use random number for market orders.
+    exchange: string; //always "Huobi"
+    side: string; // buy or sell
+    type: string; // "market" / "limit" / "stop" / "trailing-stop" / "fill-or-kill" / "exchange market" / "exchange limit" / "exchange stop" / "exchange trailing-stop" / "exchange fill-or-kill". (type starting by "exchange " are exchange orders, others are margin trading orders)
+    is_hidden?: boolean;
+}
+
+interface HuobiNewOrderResponse extends RejectableResponse {
+    order_id: string;
+}
+
+interface HuobiCancelOrderRequest {
+    order_id: string;
+}
+
+interface HuobiCancelReplaceOrderRequest extends HuobiNewOrderRequest {
+    order_id: string;
+}
+
+interface HuobiCancelReplaceOrderResponse extends HuobiCancelOrderRequest, RejectableResponse { }
+
+interface HuobiOrderStatusRequest {
+    order_id: string;
+}
+
+interface HuobiMyTradesRequest {
+    symbol: string;
+    timestamp: number;
+}
+
+interface HuobiMyTradesResponse extends RejectableResponse {
+    price: string;
+    amount: string;
+    timestamp: number;
+    exchange: string;
+    type: string;
+    fee_currency: string;
+    fee_amount: string;
+    tid: number;
+    order_id: string;
+}
+
+interface HuobiOrderStatusResponse extends RejectableResponse {
+    symbol: string;
+    exchange: string; // bitstamp or Huobi
+    price: number;
+    avg_execution_price: string;
+    side: string;
+    type: string; // "market" / "limit" / "stop" / "trailing-stop".
+    timestamp: number;
+    is_live: boolean;
+    is_cancelled: boolean;
+    is_hidden: boolean;
+    was_forced: boolean;
+    executed_amount: string;
+    remaining_amount: string;
+    original_amount: string;
 }
 
 class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
     OrderUpdate = new Utils.Evt<Models.OrderStatusUpdate>();
     ConnectChanged = new Utils.Evt<Models.ConnectivityStatus>();
 
-    generateClientOrderId = () => {
-        return shortId.generate().replace(/_/g, "XX").replace(/-/g, "YY");
-    };
-
     supportsCancelAllOpenOrders = (): boolean => { return false; };
     cancelAllOpenOrders = (): Q.Promise<number> => { return Q(0); };
 
-    public cancelsByClientOrderId = true;
-    // let's really hope there's no race conditions on their end -- we're assuming here that orders sent first
-    // will be acked first, so we can match up orders and their acks
-    private _ordersWaitingForAckQueue = [];
+    generateClientOrderId = () => shortId.generate();
+
+    public cancelsByClientOrderId = false;
+
+    private convertToOrderRequest = (order: Models.OrderStatusReport): HuobiNewOrderRequest => {
+        return {
+            amount: order.quantity.toString(),
+            exchange: "Huobi",
+            price: order.price.toString(),
+            side: encodeSide(order.side),
+            symbol: this._symbolProvider.symbol,
+            type: encodeTimeInForce(order.timeInForce, order.type)
+        };
+    }
 
     sendOrder = (order: Models.OrderStatusReport) => {
-        this._log.info("To Send Order [ %s ]", order.orderId);
+        var req = this.convertToOrderRequest(order);
 
-        let o: Order = {
-            instrument_id: this._symbolProvider.symbol,
-            type: order.type === Models.OrderType.Limit ? "limit" : "market",
-            side: order.side === Models.Side.Bid ? "buy" : "sell",
-            client_oid: order.orderId,
-        };
+        this._http
+            .post<HuobiNewOrderRequest, HuobiNewOrderResponse>("order/new", req)
+            .then(resp => {
+                if (typeof resp.data.message !== "undefined") {
+                    this.OrderUpdate.trigger({
+                        orderStatus: Models.OrderStatus.Rejected,
+                        orderId: order.orderId,
+                        rejectMessage: resp.data.message,
+                        time: resp.time
+                    });
+                    return;
+                }
 
-        if (order.type === Models.OrderType.Limit) {
-            o.size = order.quantity.toString();
-            o.price = order.price.toString();
-        } else {
-            o.size = order.quantity.toString();
-            o.notional = (order.price * order.quantity).toString();
-        }
+                this.OrderUpdate.trigger({
+                    orderId: order.orderId,
+                    exchangeId: resp.data.order_id,
+                    time: resp.time,
+                    orderStatus: Models.OrderStatus.Working
+                });
+            }).done();
 
-        let jsonString = JSON.stringify(o);
-        this._http.post("/api/spot/v3/orders", jsonString).then((msg: Models.Timestamped<OrderAck>) => {
-            let orderAcceptTime = Utils.date();
-            let osr: Models.OrderStatusUpdate = {
-                exchange: order.exchange,
-                pair: order.pair,
-                side: order.side,
-                source: order.source,
-                type: order.type,
-                timeInForce: order.timeInForce,
-                preferPostOnly: order.preferPostOnly,
-                quantity: order.quantity,
-                price: order.price,
-                time: order.time,
-                computationalLatency: Utils.fastDiff(orderAcceptTime, order.time)
-            };
-            if (msg.data.result) {
-                osr.orderId = msg.data.client_oid;
-                osr.exchangeId = msg.data.order_id;
-                osr.orderStatus = Models.OrderStatus.Working;
-                osr.cancelRejected = false;
-                this._log.info("Order Submited! [ %s || %s ]", msg.data.client_oid, msg.data.order_id);
-            } else {
-                osr.orderId = order.orderId;
-                osr.exchangeId = order.exchangeId;
-                osr.orderStatus = Models.OrderStatus.Cancelled;
-                osr.cancelRejected = false;
-                osr.rejectMessage = msg.data.message;
-                osr.rejectCode = msg.data.code;
-                this._log.warn("Order Rejected! [ %o ]", msg.data);
-            }
-            this.OrderUpdate.trigger(osr);
-        }, (err) => {
-            order.orderStatus = Models.OrderStatus.Other;
-            this._log.warn("Submit order error or timeout! [ %o ]", err);
-            this.OrderUpdate.trigger(order);
-
-        }).done();
+        this.OrderUpdate.trigger({
+            orderId: order.orderId,
+            computationalLatency: Utils.fastDiff(new Date(), order.time)
+        });
     };
 
     cancelOrder = (cancel: Models.OrderStatusReport) => {
-        this._log.info("To Cancel Order [ %s || %s ] Status: %s --- PendingCancel: %s --- CancelRejected: %s --- Price: %s", cancel.orderId, cancel.exchangeId, cancel.orderStatus, cancel.pendingCancel, cancel.cancelRejected, cancel.price);
-
-        let c: Cancel = { instrument_id: this._symbolProvider.symbol };
-
-        let cancelId = this.cancelsByClientOrderId ? cancel.orderId : cancel.exchangeId;
-        let jsonString = JSON.stringify(c);
-        this._http.post("/api/spot/v3/cancel_orders/" + cancelId, jsonString)
-            .then((msg: Models.Timestamped<OrderAck>) => {
-                let osr: Models.OrderStatusUpdate = {
-                    exchange: cancel.exchange,
-                    pair: cancel.pair,
-                    side: cancel.side,
-                    source: cancel.source,
-                    type: cancel.type,
-                    timeInForce: cancel.timeInForce,
-                    preferPostOnly: cancel.preferPostOnly,
-                    quantity: cancel.quantity,
-                    price: cancel.price,
-                    time: cancel.time,
-                };
-                if (msg.data.result) {
-                    osr.orderId = msg.data.client_oid;
-                    osr.exchangeId = msg.data.order_id;
-                    osr.orderStatus = Models.OrderStatus.Cancelled;
-                    osr.cancelRejected = false;
-                    osr.pendingCancel = false;
-                    this._log.info("Order Cancelled! [ %s || %s ]", msg.data.client_oid, msg.data.order_id);
-                } else {
-                    osr.orderId = cancel.orderId;
-                    osr.exchangeId = cancel.exchangeId;
-                    osr.orderStatus = Models.OrderStatus.Rejected;
-                    osr.rejectCode = msg.data.code;
-                    osr.rejectMessage = msg.data.message;
-                    osr.cancelRejected = true;
-                    let errArray = [33027, 33026, 33014];
-                    if (errArray.indexOf(osr.rejectCode) > -1) {
-                        osr.orderStatus = Models.OrderStatus.Cancelled;
-                        osr.pendingCancel = false;
-                    }
-                    this._log.warn("Cancel Order Rejected! [ %s||%s ]: %o", cancel.orderId, cancel.exchangeId, msg.data);
+        var req = { order_id: cancel.exchangeId };
+        this._http
+            .post<HuobiCancelOrderRequest, any>("order/cancel", req)
+            .then(resp => {
+                if (typeof resp.data.message !== "undefined") {
+                    this.OrderUpdate.trigger({
+                        orderStatus: Models.OrderStatus.Rejected,
+                        cancelRejected: true,
+                        orderId: cancel.orderId,
+                        rejectMessage: resp.data.message,
+                        time: resp.time
+                    });
+                    return;
                 }
-                this.OrderUpdate.trigger(osr);
-            }, (err) => {
-                cancel.orderStatus = Models.OrderStatus.Other;
-                cancel.cancelRejected = false;
-                this._log.warn("Cancel order error or timeout! [ %o ]", err);
-                this.OrderUpdate.trigger(cancel);
+
+                this.OrderUpdate.trigger({
+                    orderId: cancel.orderId,
+                    time: resp.time,
+                    orderStatus: Models.OrderStatus.Cancelled
+                });
             })
             .done();
+
+        this.OrderUpdate.trigger({
+            orderId: cancel.orderId,
+            computationalLatency: Utils.fastDiff(new Date(), cancel.time)
+        });
     };
 
     replaceOrder = (replace: Models.OrderStatusReport) => {
@@ -510,285 +285,272 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
         this.sendOrder(replace);
     };
 
-    // TODO:
-    private static getStatus(status: string): Models.OrderStatus {
-        // status: -1: cancelled, 0: pending, 1: partially filled, 2: fully filled, 4: cancel request in process
-        switch (status) {
-            case "cancelled": return Models.OrderStatus.Cancelled;
-            case "open": return Models.OrderStatus.Working;
-            case "part_filled": return Models.OrderStatus.Working;
-            case "filled": return Models.OrderStatus.Complete;
-            case "failure": return Models.OrderStatus.Rejected;
-            default: return Models.OrderStatus.Other;
-        }
-    }
+    private downloadOrderStatuses = () => {
+        var tradesReq = { timestamp: this._since.unix(), symbol: this._symbolProvider.symbol };
+        this._http
+            .post<HuobiMyTradesRequest, HuobiMyTradesResponse[]>("mytrades", tradesReq)
+            .then(resps => {
+                _.forEach(resps.data, t => {
 
-    // TODO: Trade information can be got from BOTH websocket and RESTful API.
-    private onOrder = (msg: Models.Timestamped<HuobiOrderStatus[]>) => {
-        let t = msg.time;
-        let orders: HuobiOrderStatus[] = msg.data;
-        _.forEach(orders, order => {
-            let filledSize = parseFloat(order.filled_size);
-            let size = parseFloat(order.size);
-            let filledNotional = parseFloat(order.filled_notional);
-            let avgPx = filledSize > 0 ? 0 : filledNotional / filledSize;
-            let price = parseFloat(order.price);
-            let lastPx = price;
+                    this._http
+                        .post<HuobiOrderStatusRequest, HuobiOrderStatusResponse>("order/status", { order_id: t.order_id })
+                        .then(r => {
 
-            let status: Models.OrderStatusUpdate = {
-                orderId: order.client_oid,
-                exchangeId: order.order_id,
-                orderStatus: HuobiOrderEntryGateway.getStatus(order.status),
-                time: t,
-                pair: this._symbolProvider.pair,
-                side: order.side === "buy" ? Models.Side.Bid : Models.Side.Ask,
-                type: order.type === "limit" ? Models.OrderType.Limit : Models.OrderType.Market,
-                quantity: size,
-                lastQuantity: filledSize,
-                leavesQuantity: size - filledSize,
-                cumQuantity: filledSize,
-                lastPrice: lastPx > 0 ? lastPx : undefined,
-                averagePrice: avgPx > 0 ? avgPx : undefined,
-                partiallyFilled: order.status === "part_filled",
-                liquidity: Models.Liquidity.Make,
-                cancelRejected: false,
-                pendingCancel: false,
-                pendingReplace: false
-            };
-            this._log.info("Exchange Order [ %s || %s ] Status: %s --- PendingCancel: %s --- CancelRejected: %s --- Price: %s", status.orderId, status.exchangeId, status.orderStatus, status.pendingCancel, status.cancelRejected, status.price);
+                            this.OrderUpdate.trigger({
+                                exchangeId: t.order_id,
+                                lastPrice: parseFloat(t.price),
+                                lastQuantity: parseFloat(t.amount),
+                                orderStatus: HuobiOrderEntryGateway.GetOrderStatus(r.data),
+                                averagePrice: parseFloat(r.data.avg_execution_price),
+                                leavesQuantity: parseFloat(r.data.remaining_amount),
+                                cumQuantity: parseFloat(r.data.executed_amount),
+                                quantity: parseFloat(r.data.original_amount)
+                            });
 
-            this.OrderUpdate.trigger(status);
-        })
+                        })
+                        .done();
+                });
+            }).done();
 
+        this._since = moment.utc();
     };
 
-    private _log = log("tribeca:gateway:Huobi");
+    private static GetOrderStatus(r: HuobiOrderStatusResponse) {
+        if (r.is_cancelled) return Models.OrderStatus.Cancelled;
+        if (r.is_live) return Models.OrderStatus.Working;
+        if (r.executed_amount === r.original_amount) return Models.OrderStatus.Complete;
+        return Models.OrderStatus.Other;
+    }
+
+    private _since = moment.utc();
+    private _log = log("tribeca:gateway:HuobiOE");
     constructor(
+        timeProvider: Utils.ITimeProvider,
+        private _details: HuobiBaseGateway,
         private _http: HuobiHttp,
-        private _socket: HuobiWebsocket,
-        private _signer: HuobiMessageSigner,
         private _symbolProvider: HuobiSymbolProvider) {
-        let orderChannel = ["spot/order:" + _symbolProvider.symbol];
-        this._socket.setHandler("spot/order", this.onOrder);
-        // Note：_socket.ConnectChanged VS. this.ConnectChanged
-        this._socket.ConnectChanged.on(cs => {
-            if (cs == Models.ConnectivityStatus.Connected) {
-                if (this._socket.LoggedIn) {
-                    this._socket.send("subscribe", orderChannel);
-                } else {
-                    this._socket.login(this._signer, () => {
-                        this._socket.send("subscribe", orderChannel);
-                        this._log.info(orderChannel, "subscribing orderChannel");
-                    });
-                }
-                this.ConnectChanged.trigger(cs);// MARK: Login first
-            } else {
-                //TODO:
-            }
-        });
+
+        _http.ConnectChanged.on(s => this.ConnectChanged.trigger(s));
+        timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
     }
 }
 
-//https://github.com/huobiapi/API_Docs_en/wiki/Signing_API_Requests
-class HuobiMessageSigner {
-    private _secretKey: string;
-    private _api_key: string;
 
-    public get apiKey(): string { return this._api_key; };
+class RateLimitMonitor {
+    private _log = log("tribeca:gateway:rlm");
 
-    public ComputeHmac256 = (message: string): string => {
-        return crypto.createHmac("SHA256", this._secretKey).update(message).digest("base64");
+    private _queue = Deque();
+    private _durationMs: number;
+
+    public add = () => {
+        var now = moment.utc();
+
+        while (now.diff(this._queue.peek()) > this._durationMs) {
+            this._queue.shift();
+        }
+
+        this._queue.push(now);
+
+        if (this._queue.length > this._number) {
+            this._log.error("Exceeded rate limit", { nRequests: this._queue.length, max: this._number, durationMs: this._durationMs });
+        }
     }
 
-    public signMessage = (m: SignedMessage): SignedMessage => {
-        let els: string[] = [];
-        if (!m.hasOwnProperty("api_key"))
-            m.api_key = this._api_key;
-        let keys = [];
-        for (let key in m) {
-            if (m.hasOwnProperty(key))
-                keys.push(key);
-        }
-        keys.sort();
-        for (let i = 0; i < keys.length; i++) {
-            const k = keys[i];
-            if (m.hasOwnProperty(k))
-                els.push(m[k]);
-        }
-        let sig = els.join("") + this._secretKey;
-        m.sign = crypto.createHash("md5").update(sig).digest("hex").toString().toUpperCase();
-        return m;
-    };
-
-    constructor(config: Config.IConfigProvider) {
-        this._api_key = config.GetString("HuobiApiKey");
-        this._secretKey = config.GetString("HuobiSecretKey");
+    constructor(private _number: number, duration: moment.Duration) {
+        this._durationMs = duration.asMilliseconds();
     }
 }
-
 
 class HuobiHttp {
-    post = <T>(actionUrl: string, jsonString: string): Q.Promise<Models.Timestamped<T>> => {
-        let d = Q.defer<Models.Timestamped<T>>();
-        let u = url.resolve(this._baseUrl, actionUrl);
-        let timestamp = Utils.date().toISOString();
-        let preHash = timestamp + "POST" + actionUrl + jsonString;
-        request({
-            url: u,
-            body: jsonString,
+    ConnectChanged = new Utils.Evt<Models.ConnectivityStatus>();
+
+    private _timeout = 15000;
+
+    get = <T>(actionUrl: string, qs?: any): Q.Promise<Models.Timestamped<T>> => {
+        const url = this._baseUrl + "/" + actionUrl;
+        var opts = {
+            timeout: this._timeout,
+            url: url,
+            qs: qs || undefined,
+            method: "GET"
+        };
+
+        return this.doRequest<T>(opts, url);
+    };
+
+    // Huobi seems to have a race condition where nonces are processed out of order when rapidly placing orders
+    // Retry here - look to mitigate in the future by batching orders?
+    post = <TRequest, TResponse>(actionUrl: string, msg: TRequest): Q.Promise<Models.Timestamped<TResponse>> => {
+        return this.postOnce<TRequest, TResponse>(actionUrl, _.clone(msg)).then(resp => {
+            var rejectMsg: string = (<any>(resp.data)).message;
+            if (typeof rejectMsg !== "undefined" && rejectMsg.indexOf("Nonce is too small") > -1)
+                return this.post<TRequest, TResponse>(actionUrl, _.clone(msg));
+            else
+                return resp;
+        });
+    }
+
+    private postOnce = <TRequest, TResponse>(actionUrl: string, msg: TRequest): Q.Promise<Models.Timestamped<TResponse>> => {
+        msg["request"] = "/v1/" + actionUrl;
+        msg["nonce"] = this._nonce.toString();
+        this._nonce += 1;
+
+        var payload = new Buffer(JSON.stringify(msg)).toString("base64");
+        var signature = crypto.createHmac("sha384", this._secret).update(payload).digest('hex');
+
+        const url = this._baseUrl + "/" + actionUrl;
+        var opts: request.Options = {
+            timeout: this._timeout,
+            url: url,
             headers: {
-                "Content-Type": "application/json",
-                "AccessKeyId": this._signer.apiKey,
-                "Signature": this._signer.ComputeHmac256(preHash),
-                "Timestamp": timestamp,
+                "X-BFX-APIKEY": this._apiKey,
+                "X-BFX-PAYLOAD": payload,
+                "X-BFX-SIGNATURE": signature
             },
-            method: "POST",
-            timeout: 10 * 1000
-        }, (err, resp, body) => {
-            if (err) d.reject(err);
+            method: "POST"
+        };
+
+        return this.doRequest<TResponse>(opts, url);
+    };
+
+    private doRequest = <TResponse>(msg: request.Options, url: string): Q.Promise<Models.Timestamped<TResponse>> => {
+        var d = Q.defer<Models.Timestamped<TResponse>>();
+
+        this._monitor.add();
+        request(msg, (err, resp, body) => {
+            if (err) {
+                this._log.error(err, "Error returned: url=", url, "err=", err);
+                d.reject(err);
+            }
             else {
                 try {
-                    let t = Utils.date();
-                    let jsonObj = JSON.parse(body);
-                    d.resolve(new Models.Timestamped(jsonObj, t));
+                    var t = new Date();
+                    var data = JSON.parse(body);
+                    d.resolve(new Models.Timestamped(data, t));
                 }
-                catch (e) {
-                    this._log.error(err, "url: %s, err: %o, body: %o", actionUrl, err, body);
-                    d.reject(e);
+                catch (err) {
+                    this._log.error(err, "Error parsing JSON url=", url, "err=", err, ", body=", body);
+                    d.reject(err);
                 }
             }
         });
-        return d.promise;
-    }
 
-    get = <T>(actionUrl: string): Q.Promise<Models.Timestamped<T>> => {
-        let d = Q.defer<Models.Timestamped<T>>();
-        let u = url.resolve(this._baseUrl, actionUrl);
-        let timestamp = Utils.date().toISOString();
-        let preHash = timestamp + "GET" + actionUrl;
-        request({
-            url: u,
-            headers: {
-                "Content-Type": "application/json",
-                "AccessKeyId": this._signer.apiKey,
-                "Signature": this._signer.ComputeHmac256(preHash),
-                "Timestamp": timestamp,
-            },
-            method: "GET",
-            timeout: 10 * 1000
-
-        }, (err, resp, body) => {
-            if (err) d.reject(err);
-            else {
-                try {
-                    let t = Utils.date();
-                    let jsonObj = JSON.parse(body);
-                    d.resolve(new Models.Timestamped<any>(jsonObj, t));
-                }
-                catch (e) {
-                    this._log.error(err, "url: %s, err: %o, body: %o", actionUrl, err, body);
-                    d.reject(e);
-                }
-            }
-        });
         return d.promise;
-    }
+    };
 
     private _log = log("tribeca:gateway:HuobiHTTP");
     private _baseUrl: string;
-    constructor(config: Config.IConfigProvider, private _signer: HuobiMessageSigner) {
-        this._baseUrl = config.GetString("HuobiHttpUrl");
-        this._log.info({ "HuobiHttpUrl": this._baseUrl }, "Constructing HuobiHttp!");
+    private _apiKey: string;
+    private _secret: string;
+    private _nonce: number;
+
+    constructor(config: Config.IConfigProvider, private _monitor: RateLimitMonitor) {
+        this._baseUrl = config.GetString("HuobiHttpUrl")
+        this._apiKey = config.GetString("HuobiKey");
+        this._secret = config.GetString("HuobiSecret");
+
+        this._nonce = new Date().valueOf();
+        this._log.info("Starting nonce: ", this._nonce);
+        setTimeout(() => this.ConnectChanged.trigger(Models.ConnectivityStatus.Connected), 10);
     }
+}
+
+interface HuobiPositionResponseItem {
+    type: string;
+    currency: string;
+    amount: string;
+    available: string;
 }
 
 class HuobiPositionGateway implements Interfaces.IPositionGateway {
     PositionUpdate = new Utils.Evt<Models.CurrencyPosition>();
 
-    private static convertCurrency(name: string): Models.Currency {
-        switch (name.toLowerCase()) {
-            case "btc": return Models.Currency.BTC;
-            case "eth": return Models.Currency.ETH;
-            case "eos": return Models.Currency.EOS;
-            case "usdt": return Models.Currency.USDT;
-            case "xrp": return Models.Currency.XRP;
-            case "ltc": return Models.Currency.LTC;
-            case "bnb": return Models.Currency.BNB;
-            case "trx": return Models.Currency.TRX;
-            case "usd": return Models.Currency.USD;
-            case "eur": return Models.Currency.EUR;
-            case "gbp": return Models.Currency.GBP;
-            case "cny": return Models.Currency.CNY;
-            case "dash": return Models.Currency.DASH;
-            case "okb": return Models.Currency.OKB;
-
-            default: throw new Error("Unsupported currency " + name);
-        }
-    }
-
-    private trigger = () => {
-        this._http.get("/api/spot/v3/accounts").then(msg => {
-            let accountArray = <Array<any>>msg.data;
-            accountArray.forEach(account => {
-                let available = parseFloat(account.available);
-                let held = parseFloat(account.hold);
-                let currency = HuobiPositionGateway.convertCurrency(account.currency);
-                let pos = new Models.CurrencyPosition(available, held, currency);
-                this.PositionUpdate.trigger(pos);
+    private onRefreshPositions = () => {
+        this._http.post<{}, HuobiPositionResponseItem[]>("balances", {}).then(res => {
+            _.forEach(_.filter(res.data, x => x.type === "exchange"), p => {
+                var amt = parseFloat(p.amount);
+                var cur = Models.toCurrency(p.currency);
+                var held = amt - parseFloat(p.available);
+                var rpt = new Models.CurrencyPosition(amt, held, cur);
+                this.PositionUpdate.trigger(rpt);
             });
         }).done();
-    };
+    }
 
     private _log = log("tribeca:gateway:HuobiPG");
-    constructor(private _http: HuobiHttp) {
-        setInterval(this.trigger, 15000);
-        setTimeout(this.trigger, 10);
+    constructor(timeProvider: Utils.ITimeProvider, private _http: HuobiHttp) {
+        timeProvider.setInterval(this.onRefreshPositions, moment.duration(15, "seconds"));
+        this.onRefreshPositions();
     }
 }
 
 class HuobiBaseGateway implements Interfaces.IExchangeDetailsGateway {
-    public get hasSelfTradePrevention() { return false; }
-    name(): string { return "Huobi"; }
-    makeFee(): number { return 0.001; }
-    takeFee(): number { return 0.001; }
-    exchange(): Models.Exchange { return Models.Exchange.Okex; }
+    public get hasSelfTradePrevention() {
+        return false;
+    }
+
+    name(): string {
+        return "Huobi";
+    }
+
+    makeFee(): number {
+        return 0.001;
+    }
+
+    takeFee(): number {
+        return 0.002;
+    }
+
+    exchange(): Models.Exchange {
+        return Models.Exchange.Huobi;
+    }
+
     constructor(public minTickIncrement: number) { }
 }
 
 class HuobiSymbolProvider {
     public symbol: string;
-    public symbolWithoutHyphen: string;
-    public pair: Models.CurrencyPair;
 
     constructor(pair: Models.CurrencyPair) {
-        this.pair = pair;
-        const GetCurrencySymbol = (s: Models.Currency): string => Models.fromCurrency(s);
-        this.symbol = GetCurrencySymbol(pair.base) + "-" + GetCurrencySymbol(pair.quote);
-        this.symbolWithoutHyphen = GetCurrencySymbol(pair.base) + GetCurrencySymbol(pair.quote);
+        this.symbol = Models.fromCurrency(pair.base).toLowerCase() + Models.fromCurrency(pair.quote).toLowerCase();
     }
 }
 
 class Huobi extends Interfaces.CombinedGateway {
-    constructor(config: Config.IConfigProvider, pair: Models.CurrencyPair) {
-        let symbol = new HuobiSymbolProvider(pair);
-        let signer = new HuobiMessageSigner(config);
-        let http = new HuobiHttp(config, signer);
-        let socket = new HuobiWebsocket(config);
-        let minTickIncrement = config.GetNumber("MinTickIncrement");
+    constructor(timeProvider: Utils.ITimeProvider, config: Config.IConfigProvider, symbol: HuobiSymbolProvider, pricePrecision: number) {
+        const monitor = new RateLimitMonitor(60, moment.duration(1, "minutes"));
+        const http = new HuobiHttp(config, monitor);
+        const details = new HuobiBaseGateway(pricePrecision);
 
-
-        let orderGateway = config.GetString("HuobiOrderDestination") == "Okex"
-            ? <Interfaces.IOrderEntryGateway>new HuobiOrderEntryGateway(http, socket, signer, symbol)
+        const orderGateway = config.GetString("HuobiOrderDestination") == "Huobi"
+            ? <Interfaces.IOrderEntryGateway>new HuobiOrderEntryGateway(timeProvider, details, http, symbol)
             : new NullGateway.NullOrderGateway();
 
         super(
-            new HuobiMarketDataGateway(socket, symbol),
+            new HuobiMarketDataGateway(timeProvider, http, symbol),
             orderGateway,
-            new HuobiPositionGateway(http),
-            new HuobiBaseGateway(minTickIncrement)); 
+            new HuobiPositionGateway(timeProvider, http),
+            details);
     }
 }
 
-export async function createHuobi(config: Config.IConfigProvider, pair: Models.CurrencyPair): Promise<Interfaces.CombinedGateway> {
-    return new Huobi(config, pair);
+interface SymbolDetails {
+    "base-currency": string,
+    "quote-currency": string,
+    "price-precision": number,
+    "amount-precision" : number,
+    "symbol-partition": string
+}
+
+export async function createHuobi(timeProvider: Utils.ITimeProvider, config: Config.IConfigProvider, pair: Models.CurrencyPair): Promise<Interfaces.CombinedGateway> {
+    const detailsUrl = config.GetString("HuobiHttpUrl") + "/common/symbols";
+    const symbolDetails = await Utils.getJSON<SymbolDetails[]>(detailsUrl);
+    const symbol = new HuobiSymbolProvider(pair);
+
+    for (let s of symbolDetails) {
+        if (s["base-currency"] === symbol.symbol)
+            return new Huobi(timeProvider, config, symbol, 10 ** (-1 * s["price-precision"]));
+    }
+
+    throw new Error("cannot match pair to a Huobi Symbol " + pair.toString());
 }

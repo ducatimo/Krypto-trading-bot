@@ -23,13 +23,24 @@ import { RSA_NO_PADDING } from "constants";
 var shortId = require("shortid");
 var Deque = require("collections/deque");
 
+interface HuobiMarketTradeResult {
+    status:string;
+    data: HuobiMarketTrade;
+}
+
+
 interface HuobiMarketTrade {
-    tid: number;
-    timestamp: number;
+    id: number;
+    ts: number;
+    data: HuobiMarketTradeData[];
+}
+
+interface HuobiMarketTradeData {
+    id: number;
+    ts: number;
     price: string;
     amount: string;
-    exchange: string;
-    type: string;
+    direction: string;
 }
 
 interface HuobiMarketLevel {
@@ -79,12 +90,12 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
 
     private _since: number = null;
     MarketTrade = new Utils.Evt<Models.GatewayMarketTrade>();
-    private onTrades = (trades: Models.Timestamped<HuobiMarketTrade[]>) => {
-        _.forEach(trades.data, trade => {
+    private onTrades = (trades: Models.Timestamped<HuobiMarketTradeResult>) => {
+        _.forEach(trades.data.data.data, trade => {
             var px = parseFloat(trade.price);
             var sz = parseFloat(trade.amount);
-            var time = moment.unix(trade.timestamp).toDate();
-            var side = decodeSide(trade.type);
+            var time = moment.unix(trade.ts).toDate();
+            var side = decodeSide(trade.direction);
             var mt = new Models.GatewayMarketTrade(px, sz, time, this._since === null, side);
             this.MarketTrade.trigger(mt);
         });
@@ -95,7 +106,7 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
     private downloadMarketTrades = () => {
         var qs = { timestamp: this._since === null ? moment.utc().subtract(60, "seconds").unix() : this._since };
         this._http
-            .get<HuobiMarketTrade[]>("market/trade?symbol=" + this._symbolProvider.symbol, qs)
+            .get<HuobiMarketTradeResult>("market/history/trade?size=20&symbol=" + this._symbolProvider.symbol, qs)
             .then(this.onTrades)
             .done();
     };
@@ -117,7 +128,7 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
 
     private downloadMarketData = () => {
         this._http
-            .get<HuobiOrderBookResult>("market/depth", { symbol: this._symbolProvider.symbol, depth: 10, type : "step0" })
+            .get<HuobiOrderBookResult>("market/depth", { symbol: this._symbolProvider.symbol, depth: 20, type : "step0" })
             .then(this.onMarketData)
             .done();
     };

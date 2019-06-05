@@ -215,7 +215,7 @@ const liveTradingSetup = (): SimulationClasses => {
             case Models.Exchange.Okex: return OkCoin.createOkCoin(config, pair);
             case Models.Exchange.Null: return NullGw.createNullGateway(config, pair);
             case Models.Exchange.Bitfinex: return Bitfinex.createBitfinex(timeProvider, config, pair);
-            case Models.Exchange.Huobi: return Huobi.createHuobi(config, pair);
+            case Models.Exchange.Huobi: return Huobi.createHuobi(timeProvider,config, pair);
             default: throw new Error("no gateway provided for exchange " + exchange);
         }
     };

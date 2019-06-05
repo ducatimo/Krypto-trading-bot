@@ -19,6 +19,7 @@ import Interfaces = require("../interfaces");
 import moment = require("moment");
 import _ = require("lodash");
 import log from "../logging";
+import { RSA_NO_PADDING } from "constants";
 var shortId = require("shortid");
 var Deque = require("collections/deque");
 
@@ -90,7 +91,7 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
     private downloadMarketTrades = () => {
         var qs = { timestamp: this._since === null ? moment.utc().subtract(60, "seconds").unix() : this._since };
         this._http
-            .get<HuobiMarketTrade[]>("trades/" + this._symbolProvider.symbol, qs)
+            .get<HuobiMarketTrade[]>("market/trade?symbol=" + this._symbolProvider.symbol, qs)
             .then(this.onTrades)
             .done();
     };
@@ -105,6 +106,8 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
 
     MarketData = new Utils.Evt<Models.Market>();
     private onMarketData = (book: Models.Timestamped<HuobiOrderBook>) => {
+        console.log('**********');
+        console.log(book);
         var bids = HuobiMarketDataGateway.ConvertToMarketSides(book.data.bids);
         var asks = HuobiMarketDataGateway.ConvertToMarketSides(book.data.asks);
         this.MarketData.trigger(new Models.Market(bids, asks, book.time));
@@ -112,7 +115,7 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
 
     private downloadMarketData = () => {
         this._http
-            .get<HuobiOrderBook>("book/" + this._symbolProvider.symbol, { limit_bids: 5, limit_asks: 5 })
+            .get<HuobiOrderBook>("market/depth", { symbol: this._symbolProvider.symbol, depth: 5 })
             .then(this.onMarketData)
             .done();
     };
@@ -161,7 +164,7 @@ interface HuobiCancelReplaceOrderRequest extends HuobiNewOrderRequest {
 interface HuobiCancelReplaceOrderResponse extends HuobiCancelOrderRequest, RejectableResponse { }
 
 interface HuobiOrderStatusRequest {
-    order_id: string;
+    "order-id": string;
 }
 
 interface HuobiMyTradesRequest {
@@ -293,7 +296,7 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
                 _.forEach(resps.data, t => {
 
                     this._http
-                        .post<HuobiOrderStatusRequest, HuobiOrderStatusResponse>("order/status", { order_id: t.order_id })
+                        .post<HuobiOrderStatusRequest, HuobiOrderStatusResponse>("v1/order/orders", { "order-id": t.order_id })
                         .then(r => {
 
                             this.OrderUpdate.trigger({
@@ -331,7 +334,7 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
         private _symbolProvider: HuobiSymbolProvider) {
 
         _http.ConnectChanged.on(s => this.ConnectChanged.trigger(s));
-        timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
+        //timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
     }
 }
 
@@ -424,6 +427,8 @@ class HuobiHttp {
             }
             else {
                 try {
+                    console.log(url);
+                    console.log(msg);
                     var t = new Date();
                     var data = JSON.parse(body);
                     d.resolve(new Models.Timestamped(data, t));
@@ -455,6 +460,11 @@ class HuobiHttp {
     }
 }
 
+interface HuobiPositionResponseItemResult {
+    status: string
+    data: HuobiPositionResponseItem[];
+}
+
 interface HuobiPositionResponseItem {
     type: string;
     currency: string;
@@ -466,14 +476,17 @@ class HuobiPositionGateway implements Interfaces.IPositionGateway {
     PositionUpdate = new Utils.Evt<Models.CurrencyPosition>();
 
     private onRefreshPositions = () => {
-        this._http.post<{}, HuobiPositionResponseItem[]>("balances", {}).then(res => {
-            _.forEach(_.filter(res.data, x => x.type === "exchange"), p => {
-                var amt = parseFloat(p.amount);
-                var cur = Models.toCurrency(p.currency);
-                var held = amt - parseFloat(p.available);
-                var rpt = new Models.CurrencyPosition(amt, held, cur);
-                this.PositionUpdate.trigger(rpt);
-            });
+        this._http.post<{}, HuobiPositionResponseItemResult>("v1/account/accounts/account-id/balance", {}).then(res => {
+            console.log(res.data.status);
+            if (res.data.status != 'error') {
+                _.forEach(_.filter(res.data.data, x => x.type === "exchange"), p => {
+                    var amt = parseFloat(p.amount);
+                    var cur = Models.toCurrency(p.currency);
+                    var held = amt - parseFloat(p.available);
+                    var rpt = new Models.CurrencyPosition(amt, held, cur);
+                    this.PositionUpdate.trigger(rpt);
+                });
+            }
         }).done();
     }
 
@@ -534,20 +547,55 @@ class Huobi extends Interfaces.CombinedGateway {
     }
 }
 
+
+interface SymbolDetailsResult {
+    "status": string,
+    "data": SymbolDetails[]
+}
+
 interface SymbolDetails {
     "base-currency": string,
     "quote-currency": string,
     "price-precision": number,
-    "amount-precision" : number,
+    "amount-precision": number,
     "symbol-partition": string
 }
 
 export async function createHuobi(timeProvider: Utils.ITimeProvider, config: Config.IConfigProvider, pair: Models.CurrencyPair): Promise<Interfaces.CombinedGateway> {
-    const detailsUrl = config.GetString("HuobiHttpUrl") + "/common/symbols";
-    const symbolDetails = await Utils.getJSON<SymbolDetails[]>(detailsUrl);
+    const detailsUrl = config.GetString("HuobiHttpUrl") + "/v1/common/symbols";
+    const symbolDetailsResult = await Utils.getJSON<SymbolDetailsResult>(detailsUrl);
     const symbol = new HuobiSymbolProvider(pair);
 
-    for (let s of symbolDetails) {
+    /*
+        var key = config.GetString("HuobiKey");
+    
+        var qs = "";
+        qs += "GET\n";
+        qs += "api.huobi.pro\n";
+        qs += "/v1/account/accounts\n"
+        qs += "AccessKeyId=" + key + "&SignatureMethod=HmacSHA256&SignatureVersion=2&"
+        qs += "Timestamp=" + moment.utc().format('YYYY-MM-DDTHH:mm:ss');
+    
+        console.log(qs);
+    
+    
+        var secret = config.GetString("HuobiSecret");
+        var signature = crypto.createHmac("sha256", secret).update(qs).digest('hex');
+    
+        qs += "&Signature=" + signature;
+    
+        console.log(qs);
+    
+    
+        const accountsUrl = config.GetString("HuobiHttpUrl") + "/v1/account/accounts";
+        const accountsDetails = await Utils.getJSON(accountsUrl, qs);
+        console.log('11111111');
+        console.log(accountsDetails);
+        console.log('22222222');
+        */
+
+
+    for (let s of symbolDetailsResult.data) {
         if (s["base-currency"] + s["quote-currency"] === symbol.symbol)
             return new Huobi(timeProvider, config, symbol, 10 ** (-1 * s["price-precision"]));
     }

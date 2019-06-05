@@ -128,6 +128,9 @@ export class ImmediateActionScheduler implements IActionScheduler {
 
 export function getJSON<T>(url: string, qs?: any) : Promise<T> {
     return new Promise((resolve, reject) => {
+        console.log('REQUEST!!!');
+        console.log(url);
+        console.log(qs);
         request({url: url, qs: qs}, (err: Error, resp, body) => {
             if (err) {
                 reject(err);

@@ -35,7 +35,11 @@ interface HuobiMarketTrade {
 interface HuobiMarketLevel {
     price: string;
     amount: string;
-    timestamp: string;
+}
+
+interface HuobiOrderBookResult {
+    status: string;
+    tick: HuobiOrderBook;
 }
 
 interface HuobiOrderBook {
@@ -97,7 +101,7 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
     };
 
     private static ConvertToMarketSide(level: HuobiMarketLevel): Models.MarketSide {
-        return new Models.MarketSide(parseFloat(level.price), parseFloat(level.amount));
+        return new Models.MarketSide(parseFloat(level[0]), parseFloat(level[1]));
     }
 
     private static ConvertToMarketSides(level: HuobiMarketLevel[]): Models.MarketSide[] {
@@ -105,17 +109,15 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
     }
 
     MarketData = new Utils.Evt<Models.Market>();
-    private onMarketData = (book: Models.Timestamped<HuobiOrderBook>) => {
-        console.log('**********');
-        console.log(book);
-        var bids = HuobiMarketDataGateway.ConvertToMarketSides(book.data.bids);
-        var asks = HuobiMarketDataGateway.ConvertToMarketSides(book.data.asks);
+    private onMarketData = (book: Models.Timestamped<HuobiOrderBookResult>) => {
+        var bids = HuobiMarketDataGateway.ConvertToMarketSides(book.data.tick.bids);
+        var asks = HuobiMarketDataGateway.ConvertToMarketSides(book.data.tick.asks);
         this.MarketData.trigger(new Models.Market(bids, asks, book.time));
     };
 
     private downloadMarketData = () => {
         this._http
-            .get<HuobiOrderBook>("market/depth", { symbol: this._symbolProvider.symbol, depth: 5 })
+            .get<HuobiOrderBookResult>("market/depth", { symbol: this._symbolProvider.symbol, depth: 10, type : "step0" })
             .then(this.onMarketData)
             .done();
     };
@@ -371,6 +373,14 @@ class HuobiHttp {
 
     get = <T>(actionUrl: string, qs?: any): Q.Promise<Models.Timestamped<T>> => {
         const url = this._baseUrl + "/" + actionUrl;
+
+        console.log('!!!GET!!!');
+        console.log(url);
+        console.log(qs);
+
+        //var sign = this.createSignature(url, qs);
+        //console.log(sign);
+
         var opts = {
             timeout: this._timeout,
             url: url,
@@ -391,6 +401,28 @@ class HuobiHttp {
             else
                 return resp;
         });
+    }
+
+    private createSignature(url, data = {} = null, method = "GET") {
+        //var data = { Timestamp: "", SignatureMethod: "", SignatureVersion: 0, AccessKeyId : ""};
+        //if (typeof data.recvWindow === 'undefined') data.recvWindow = Huobi.options.recvWindow;
+        data.Timestamp = new Date().toISOString().replace(/\..+/, '');//.getTime()+ Huobi.info.timeOffset;
+        data.SignatureMethod = 'HmacSHA256';
+        data.SignatureVersion = 2;
+        data.AccessKeyId = this._apiKey;
+        let query = Object.keys(data)
+            .sort((a, b) => (a > b) ? 1 : -1)
+            .reduce(function (a, k) {
+                a.push(k + '=' + encodeURIComponent(data[k]));
+                return a;
+            }, []).join('&');
+
+        var site = (new URL(url)).hostname;
+        let source = method+'\n' + site+'\n'+url.replace(this._baseUrl,'')+'\n'+query;
+        let signature = crypto.createHmac('sha256', this._secret).update(source).digest('base64');//digest('hex'); // set the HMAC hash header
+        signature = encodeURIComponent(signature);
+
+        return signature;
     }
 
     private postOnce = <TRequest, TResponse>(actionUrl: string, msg: TRequest): Q.Promise<Models.Timestamped<TResponse>> => {
@@ -565,35 +597,6 @@ export async function createHuobi(timeProvider: Utils.ITimeProvider, config: Con
     const detailsUrl = config.GetString("HuobiHttpUrl") + "/v1/common/symbols";
     const symbolDetailsResult = await Utils.getJSON<SymbolDetailsResult>(detailsUrl);
     const symbol = new HuobiSymbolProvider(pair);
-
-    /*
-        var key = config.GetString("HuobiKey");
-    
-        var qs = "";
-        qs += "GET\n";
-        qs += "api.huobi.pro\n";
-        qs += "/v1/account/accounts\n"
-        qs += "AccessKeyId=" + key + "&SignatureMethod=HmacSHA256&SignatureVersion=2&"
-        qs += "Timestamp=" + moment.utc().format('YYYY-MM-DDTHH:mm:ss');
-    
-        console.log(qs);
-    
-    
-        var secret = config.GetString("HuobiSecret");
-        var signature = crypto.createHmac("sha256", secret).update(qs).digest('hex');
-    
-        qs += "&Signature=" + signature;
-    
-        console.log(qs);
-    
-    
-        const accountsUrl = config.GetString("HuobiHttpUrl") + "/v1/account/accounts";
-        const accountsDetails = await Utils.getJSON(accountsUrl, qs);
-        console.log('11111111');
-        console.log(accountsDetails);
-        console.log('22222222');
-        */
-
 
     for (let s of symbolDetailsResult.data) {
         if (s["base-currency"] + s["quote-currency"] === symbol.symbol)

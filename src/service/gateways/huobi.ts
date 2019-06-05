@@ -548,7 +548,7 @@ export async function createHuobi(timeProvider: Utils.ITimeProvider, config: Con
     const symbol = new HuobiSymbolProvider(pair);
 
     for (let s of symbolDetails) {
-        if (s["base-currency"] === symbol.symbol)
+        if (s["base-currency"] + s["quote-currency"] === symbol.symbol)
             return new Huobi(timeProvider, config, symbol, 10 ** (-1 * s["price-precision"]));
     }
 

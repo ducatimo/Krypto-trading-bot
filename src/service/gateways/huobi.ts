@@ -203,9 +203,9 @@ interface HuobiMyOrder {
     price: string;
     "created-at": number;
     "type": string;
-    "filled-amount": string;
-    "filled-cash-amount": string;
-    "filled-fees": string;
+    "field-amount": string;
+    "field-cash-amount": string;
+    "field-fees": string;
     "finished-at": number;
     "source": string;
     "state": string;
@@ -249,7 +249,7 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
     private convertToOrderRequest = (order: Models.OrderStatusReport): HuobiNewOrderRequest => {
         return {
             "account-id": this._accountId.toString(),
-            amount: order.quantity.toFixed(4).toString(),
+            amount: order.quantity.toFixed(2).toString(),
             price: order.price.toString(),
             symbol: this._symbolProvider.symbol,
             source: "api",
@@ -322,22 +322,22 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
     };
 
     private downloadOrderStatuses = () => {
-        var tradesReq = { "account-id": this._accountId,  symbols: this._symbolProvider.symbol, ts: this._since.unix() , states: "pre-submitted, submitted, partial-filled, partial-canceled, filled, canceled" };
+        var tradesReq = { "account-id": this._accountId,  symbols: this._symbolProvider.symbol, ts: this._since.unix() , states: "pre-submitted,submitted,partial-filled,partial-canceled,filled,canceled" };
         this._http
             .getSigned<HuobiMyOrdersResponse>("v1/order/orders", tradesReq)
             .then(resps => {
                 _.forEach(resps.data.data, t => {
                     this._http
-                        .getSigned<HuobiMyTradeResponse>("v1/order/orders", { "order-id": t.id.toString() })
+                        .getSigned<HuobiMyTradeResponse>("v1/order/orders/" + t.id.toString(), {})
                         .then(r => {
                             this.OrderUpdate.trigger({
-                                exchangeId: r.data.data.id.toString(),
+                                exchangeId: Models.Exchange.Huobi.toString(),
                                 lastPrice: parseFloat(r.data.data.price),
                                 lastQuantity: parseFloat(r.data.data.amount),
                                 orderStatus: HuobiOrderEntryGateway.GetOrderStatus(r.data.data),
                                 averagePrice: parseFloat(r.data.data.price),
-                                leavesQuantity: parseFloat((parseFloat(r.data.data.amount) - parseFloat(r.data.data["filled-amount"])).toString()),
-                                cumQuantity: parseFloat(r.data.data["filled-amount"]),
+                                leavesQuantity: parseFloat((parseFloat(r.data.data.amount) - parseFloat(r.data.data["field-amount"])).toString()),
+                                cumQuantity: parseFloat(r.data.data["field-amount"]),
                                 quantity: parseFloat(r.data.data.amount)
                             });
 
@@ -381,8 +381,8 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
 
             this.getAccountId();
             _http.ConnectChanged.on(s => this.ConnectChanged.trigger(s));
-            //timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
-            this.downloadOrderStatuses();
+            timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
+            //this.downloadOrderStatuses();
     }
 }
 

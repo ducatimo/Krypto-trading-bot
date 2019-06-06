@@ -181,20 +181,40 @@ interface HuobiOrderStatusRequest {
 }
 
 interface HuobiMyTradesRequest {
-    symbol: string;
-    timestamp: number;
+    symbols: string; // , separated
+    "account-id":number;
+    ts:number;
 }
 
-interface HuobiMyTradesResponse extends RejectableResponse {
+interface HuobiDefaultResponse {
+    status:string;
+}
+
+interface HuobiMyOrdersResponse extends HuobiDefaultResponse {
+    status:string;
+    data: HuobiMyOrder[];
+}
+
+interface HuobiMyOrder {
+    id:number;
+    symbol:string;
+    "account-id": number;
+    amount:string;
     price: string;
-    amount: string;
-    timestamp: number;
-    exchange: string;
-    type: string;
-    fee_currency: string;
-    fee_amount: string;
-    tid: number;
-    order_id: string;
+    "created-at": number;
+    "type": string;
+    "filled-amount": string;
+    "filled-cash-amount": string;
+    "filled-fees": string;
+    "finished-at": number;
+    "source": string;
+    "state": string;
+    "canceled-at": number;
+}
+
+interface HuobiMyTradeResponse extends HuobiDefaultResponse {
+    status:string;
+    data: HuobiMyOrder;
 }
 
 interface HuobiOrderStatusResponse extends RejectableResponse {
@@ -238,8 +258,6 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
     }
 
     sendOrder = (order: Models.OrderStatusReport) => {
-        console.log('ORDER');
-        console.log(order);
         var req = this.convertToOrderRequest(order);
         this._http
             .postSigned<HuobiNewOrderRequest, HuobiNewOrderResponse>("v1/order/orders/place", req)
@@ -304,24 +322,23 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
     };
 
     private downloadOrderStatuses = () => {
-        var tradesReq = { timestamp: this._since.unix(), symbol: this._symbolProvider.symbol };
+        var tradesReq = { "account-id": this._accountId,  symbols: this._symbolProvider.symbol, ts: this._since.unix() , states: "pre-submitted, submitted, partial-filled, partial-canceled, filled, canceled" };
         this._http
-            .post<HuobiMyTradesRequest, HuobiMyTradesResponse[]>("mytrades", tradesReq)
+            .getSigned<HuobiMyOrdersResponse>("v1/order/orders", tradesReq)
             .then(resps => {
-                _.forEach(resps.data, t => {
+                _.forEach(resps.data.data, t => {
                     this._http
-                        .post<HuobiOrderStatusRequest, HuobiOrderStatusResponse>("v1/order/orders", { "order-id": t.order_id })
+                        .getSigned<HuobiMyTradeResponse>("v1/order/orders", { "order-id": t.id.toString() })
                         .then(r => {
-
                             this.OrderUpdate.trigger({
-                                exchangeId: t.order_id,
-                                lastPrice: parseFloat(t.price),
-                                lastQuantity: parseFloat(t.amount),
-                                orderStatus: HuobiOrderEntryGateway.GetOrderStatus(r.data),
-                                averagePrice: parseFloat(r.data.avg_execution_price),
-                                leavesQuantity: parseFloat(r.data.remaining_amount),
-                                cumQuantity: parseFloat(r.data.executed_amount),
-                                quantity: parseFloat(r.data.original_amount)
+                                exchangeId: r.data.data.id.toString(),
+                                lastPrice: parseFloat(r.data.data.price),
+                                lastQuantity: parseFloat(r.data.data.amount),
+                                orderStatus: HuobiOrderEntryGateway.GetOrderStatus(r.data.data),
+                                averagePrice: parseFloat(r.data.data.price),
+                                leavesQuantity: parseFloat((parseFloat(r.data.data.amount) - parseFloat(r.data.data["filled-amount"])).toString()),
+                                cumQuantity: parseFloat(r.data.data["filled-amount"]),
+                                quantity: parseFloat(r.data.data.amount)
                             });
 
                         })
@@ -332,10 +349,10 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
         this._since = moment.utc();
     };
 
-    private static GetOrderStatus(r: HuobiOrderStatusResponse) {
-        if (r.is_cancelled) return Models.OrderStatus.Cancelled;
-        if (r.is_live) return Models.OrderStatus.Working;
-        if (r.executed_amount === r.original_amount) return Models.OrderStatus.Complete;
+    private static GetOrderStatus(r: HuobiMyOrder) {
+        if (r["canceled-at"] > 0) return Models.OrderStatus.Cancelled;
+        if (r.state == "open") return Models.OrderStatus.Working;
+        if (r["finished-at"] > 0) return Models.OrderStatus.Complete;
         return Models.OrderStatus.Other;
     }
 
@@ -364,7 +381,8 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
 
             this.getAccountId();
             _http.ConnectChanged.on(s => this.ConnectChanged.trigger(s));
-        //timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
+            //timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
+            this.downloadOrderStatuses();
     }
 }
 
@@ -516,7 +534,7 @@ class HuobiHttp {
             else {
                 try {
                     var t = new Date();
-                    var data = JSON.parse(body);
+                    var data = body.constructor == String ? JSON.parse(body) : body;
                     d.resolve(new Models.Timestamped(data, t));
                 }
                 catch (err) {

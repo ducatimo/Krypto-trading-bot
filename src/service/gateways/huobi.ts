@@ -94,7 +94,7 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
         _.forEach(trades.data.data, trade => {
             var px = parseFloat(trade.data[0].price);
             var sz = parseFloat(trade.data[0].amount);
-            var time = moment.unix(trade.ts).toDate();
+            var time = moment.unix(trade.ts/1000).toDate();
             var side = decodeSide(trade.data[0].direction);
             var mt = new Models.GatewayMarketTrade(px, sz, time, this._since === null, side);
             this.MarketTrade.trigger(mt);

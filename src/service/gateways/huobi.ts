@@ -227,8 +227,8 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
 
     private convertToOrderRequest = (order: Models.OrderStatusReport): HuobiNewOrderRequest => {
         return {
-            "account-id": order.quantity.toString(),
-            amount: order.quantity.toString(),
+            "account-id": this._accountId.toString(),
+            amount: order.quantity.toFixed(4).toString(),
             price: order.price.toString(),
             symbol: this._symbolProvider.symbol,
             source: "api",
@@ -237,8 +237,8 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
     }
 
     sendOrder = (order: Models.OrderStatusReport) => {
+        console.log(order);
         var req = this.convertToOrderRequest(order);
-        console.log(req);
         this._http
             .postSigned<HuobiNewOrderRequest, HuobiNewOrderResponse>("v1/order/orders/place", req)
             .then(resp => {
@@ -308,7 +308,6 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
             .post<HuobiMyTradesRequest, HuobiMyTradesResponse[]>("mytrades", tradesReq)
             .then(resps => {
                 _.forEach(resps.data, t => {
-
                     this._http
                         .post<HuobiOrderStatusRequest, HuobiOrderStatusResponse>("v1/order/orders", { "order-id": t.order_id })
                         .then(r => {
@@ -339,7 +338,22 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
         return Models.OrderStatus.Other;
     }
 
+    private getAccountId() {
+        var self = this;
+        this._http.getSigned<HuobiAccountResponseItemResult>("v1/account/accounts", {}).then(res => {
+            if (res.data.status != 'error') {
+                //handle first account only!
+
+                if(res.data.data.length > 0) {
+                    var accountId = res.data.data[0].id;
+                    self._accountId = accountId;
+                }
+            }
+        })
+    }
+
     private _since = moment.utc();
+    private _accountId = 0;
     private _log = log("tribeca:gateway:HuobiOE");
     constructor(
         timeProvider: Utils.ITimeProvider,
@@ -347,7 +361,8 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
         private _http: HuobiHttp,
         private _symbolProvider: HuobiSymbolProvider) {
 
-        _http.ConnectChanged.on(s => this.ConnectChanged.trigger(s));
+            this.getAccountId();
+            _http.ConnectChanged.on(s => this.ConnectChanged.trigger(s));
         //timeProvider.setInterval(this.downloadOrderStatuses, moment.duration(8, "seconds"));
     }
 }
@@ -415,15 +430,16 @@ class HuobiHttp {
     postSigned = <TRequest, TResponse>(actionUrl: string, qs?: any): Q.Promise<Models.Timestamped<TResponse>> => {
         const url = this._baseUrl + "/" + actionUrl;
         var sign = this.createSignature(url, {}, "POST");
+
         var opts = {
             timeout: this._timeout,
             url: url + '?' + sign,
-            form: qs,
-            qs: undefined,
+            json: qs,
+            headers: {
+                "Content-Type": "application/json",
+            },
             method: "POST"
         };
-
-        console.log(opts);
 
         return this.doRequest<TResponse>(opts, url);
     };
@@ -499,6 +515,11 @@ class HuobiHttp {
             }
             else {
                 try {
+                    console.log('REQUEST');
+                    console.log(url);
+                    console.log(msg);
+                    console.log('BODY');
+                    console.log(body);
                     var t = new Date();
                     var data = JSON.parse(body);
                     d.resolve(new Models.Timestamped(data, t));

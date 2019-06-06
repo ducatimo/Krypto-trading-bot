@@ -76,11 +76,11 @@ function encodeSide(side: Models.Side) {
 
 function encodeTimeInForce(tif: Models.TimeInForce, type: Models.OrderType) {
     if (type === Models.OrderType.Market) {
-        return "exchange market";
+        return "buy-market";
     }
     else if (type === Models.OrderType.Limit) {
-        if (tif === Models.TimeInForce.FOK) return "exchange fill-or-kill";
-        if (tif === Models.TimeInForce.GTC) return "exchange limit";
+        if (tif === Models.TimeInForce.FOK) return "buy-fill-or-kill";
+        if (tif === Models.TimeInForce.GTC) return "buy-limit";
     }
     throw new Error("unsupported tif " + Models.TimeInForce[tif] + " and order type " + Models.OrderType[type]);
 }
@@ -153,13 +153,12 @@ interface RejectableResponse {
 }
 
 interface HuobiNewOrderRequest {
+    "account-id":string,
     symbol: string;
     amount: string;
+    source:string;
     price: string; //Price to buy or sell at. Must be positive. Use random number for market orders.
-    exchange: string; //always "Huobi"
-    side: string; // buy or sell
-    type: string; // "market" / "limit" / "stop" / "trailing-stop" / "fill-or-kill" / "exchange market" / "exchange limit" / "exchange stop" / "exchange trailing-stop" / "exchange fill-or-kill". (type starting by "exchange " are exchange orders, others are margin trading orders)
-    is_hidden?: boolean;
+    type: string; // "buy-limit"
 }
 
 interface HuobiNewOrderResponse extends RejectableResponse {
@@ -225,22 +224,23 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
 
     public cancelsByClientOrderId = false;
 
+
     private convertToOrderRequest = (order: Models.OrderStatusReport): HuobiNewOrderRequest => {
         return {
+            "account-id": order.quantity.toString(),
             amount: order.quantity.toString(),
-            exchange: "Huobi",
             price: order.price.toString(),
-            side: encodeSide(order.side),
             symbol: this._symbolProvider.symbol,
+            source: "api",
             type: encodeTimeInForce(order.timeInForce, order.type)
         };
     }
 
     sendOrder = (order: Models.OrderStatusReport) => {
         var req = this.convertToOrderRequest(order);
-
+        console.log(req);
         this._http
-            .post<HuobiNewOrderRequest, HuobiNewOrderResponse>("order/new", req)
+            .post<HuobiNewOrderRequest, HuobiNewOrderResponse>("v1/order/orders/place", req)
             .then(resp => {
                 if (typeof resp.data.message !== "undefined") {
                     this.OrderUpdate.trigger({

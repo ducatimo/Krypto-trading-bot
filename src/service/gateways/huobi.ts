@@ -385,16 +385,25 @@ class HuobiHttp {
     get = <T>(actionUrl: string, qs?: any): Q.Promise<Models.Timestamped<T>> => {
         const url = this._baseUrl + "/" + actionUrl;
 
-        console.log('!!!GET!!!');
-        console.log(url);
-        console.log(qs);
-
         //var sign = this.createSignature(url, qs);
         //console.log(sign);
 
         var opts = {
             timeout: this._timeout,
             url: url,
+            qs: qs || undefined,
+            method: "GET"
+        };
+
+        return this.doRequest<T>(opts, url);
+    };
+
+    getSigned = <T>(actionUrl: string, qs?: any): Q.Promise<Models.Timestamped<T>> => {
+        const url = this._baseUrl + "/" + actionUrl;
+        var sign = this.createSignature(url, qs);
+        var opts = {
+            timeout: this._timeout,
+            url: url + '?' + sign,
             qs: qs || undefined,
             method: "GET"
         };
@@ -433,7 +442,9 @@ class HuobiHttp {
         let signature = crypto.createHmac('sha256', this._secret).update(source).digest('base64');//digest('hex'); // set the HMAC hash header
         signature = encodeURIComponent(signature);
 
-        return signature;
+
+
+        return query + "&Signature=" + signature;
     }
 
     private postOnce = <TRequest, TResponse>(actionUrl: string, msg: TRequest): Q.Promise<Models.Timestamped<TResponse>> => {
@@ -470,8 +481,6 @@ class HuobiHttp {
             }
             else {
                 try {
-                    console.log(url);
-                    console.log(msg);
                     var t = new Date();
                     var data = JSON.parse(body);
                     d.resolve(new Models.Timestamped(data, t));
@@ -491,11 +500,16 @@ class HuobiHttp {
     private _apiKey: string;
     private _secret: string;
     private _nonce: number;
+    public accountId:number;
 
     constructor(config: Config.IConfigProvider, private _monitor: RateLimitMonitor) {
         this._baseUrl = config.GetString("HuobiHttpUrl")
         this._apiKey = config.GetString("HuobiKey");
         this._secret = config.GetString("HuobiSecret");
+
+
+        //get account id
+
 
         this._nonce = new Date().valueOf();
         this._log.info("Starting nonce: ", this._nonce);
@@ -503,37 +517,69 @@ class HuobiHttp {
     }
 }
 
+interface HuobiAccountResponseItemResult {
+    status: string;
+    data: HuobiAccountResponseItem[];
+}
+
+interface HuobiAccountResponseItem {
+    id: number;
+    type: string;
+    state: string;
+    "sub-type": string;
+}
+
 interface HuobiPositionResponseItemResult {
     status: string
-    data: HuobiPositionResponseItem[];
+    data: HuobiPositionResponseItem;
 }
 
 interface HuobiPositionResponseItem {
     type: string;
-    currency: string;
-    amount: string;
-    available: string;
+    state: string;
+    list: HuobiPositionListResponseItem[];
 }
+
+interface HuobiPositionListResponseItem {
+    currency: string;
+    type: string;
+    balance: string;
+    address: string;
+}
+
+
+
 
 class HuobiPositionGateway implements Interfaces.IPositionGateway {
     PositionUpdate = new Utils.Evt<Models.CurrencyPosition>();
 
     private onRefreshPositions = () => {
-        this._http.post<{}, HuobiPositionResponseItemResult>("v1/account/accounts/account-id/balance", {}).then(res => {
-            console.log(res.data.status);
+        this._http.getSigned<HuobiAccountResponseItemResult>("v1/account/accounts", {}).then(res => {
             if (res.data.status != 'error') {
-                _.forEach(_.filter(res.data.data, x => x.type === "exchange"), p => {
-                    var amt = parseFloat(p.amount);
-                    var cur = Models.toCurrency(p.currency);
-                    var held = amt - parseFloat(p.available);
-                    var rpt = new Models.CurrencyPosition(amt, held, cur);
-                    this.PositionUpdate.trigger(rpt);
-                });
+                //handle first account only!
+
+                if(res.data.data.length > 0) {
+                    var accountId = res.data.data[0].id;
+                    return accountId;
+                }
             }
+        }).then(id => {
+            this._http.getSigned<HuobiPositionResponseItemResult>("v1/account/accounts/" + id + "/balance", {}).then(res => {
+                if (res.data.status != 'error') {
+                    _.forEach(_.filter(res.data.data.list, x => x.type === "trade"), p => {
+                        var amt = parseFloat(p.balance);
+                        var cur = Models.toCurrency(p.currency);
+                        var held = amt;// - parseFloat(p.balance);
+                        var rpt = new Models.CurrencyPosition(amt, held, cur);
+                        this.PositionUpdate.trigger(rpt);
+                    });
+                }
+            });
         }).done();
     }
 
     private _log = log("tribeca:gateway:HuobiPG");
+    private _accountId = 0;
     constructor(timeProvider: Utils.ITimeProvider, private _http: HuobiHttp) {
         timeProvider.setInterval(this.onRefreshPositions, moment.duration(15, "seconds"));
         this.onRefreshPositions();

@@ -240,8 +240,9 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
         var req = this.convertToOrderRequest(order);
         console.log(req);
         this._http
-            .post<HuobiNewOrderRequest, HuobiNewOrderResponse>("v1/order/orders/place", req)
+            .postSigned<HuobiNewOrderRequest, HuobiNewOrderResponse>("v1/order/orders/place", req)
             .then(resp => {
+                console.log(resp);
                 if (typeof resp.data.message !== "undefined") {
                     this.OrderUpdate.trigger({
                         orderStatus: Models.OrderStatus.Rejected,
@@ -409,6 +410,19 @@ class HuobiHttp {
         };
 
         return this.doRequest<T>(opts, url);
+    };
+
+    postSigned = <TRequest, TResponse>(actionUrl: string, qs?: any): Q.Promise<Models.Timestamped<TResponse>> => {
+        const url = this._baseUrl + "/" + actionUrl;
+        var sign = this.createSignature(url, {});
+        var opts = {
+            timeout: this._timeout,
+            url: url + '?' + sign,
+            qs: qs || undefined,
+            method: "POST"
+        };
+
+        return this.doRequest<TResponse>(opts, url);
     };
 
     // Huobi seems to have a race condition where nonces are processed out of order when rapidly placing orders

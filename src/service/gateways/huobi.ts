@@ -50,6 +50,7 @@ interface HuobiMarketLevel {
 
 interface HuobiOrderBookResult {
     status: string;
+    ts:number;
     tick: HuobiOrderBook;
 }
 
@@ -123,7 +124,7 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
     private onMarketData = (book: Models.Timestamped<HuobiOrderBookResult>) => {
         var bids = HuobiMarketDataGateway.ConvertToMarketSides(book.data.tick.bids);
         var asks = HuobiMarketDataGateway.ConvertToMarketSides(book.data.tick.asks);
-        this.MarketData.trigger(new Models.Market(bids, asks, book.time));
+        this.MarketData.trigger(new Models.Market(bids, asks, moment.unix(book.data.ts/1000).toDate()));
     };
 
     private downloadMarketData = () => {
@@ -237,12 +238,12 @@ class HuobiOrderEntryGateway implements Interfaces.IOrderEntryGateway {
     }
 
     sendOrder = (order: Models.OrderStatusReport) => {
+        console.log('ORDER');
         console.log(order);
         var req = this.convertToOrderRequest(order);
         this._http
             .postSigned<HuobiNewOrderRequest, HuobiNewOrderResponse>("v1/order/orders/place", req)
             .then(resp => {
-                console.log(resp);
                 if (typeof resp.data.message !== "undefined") {
                     this.OrderUpdate.trigger({
                         orderStatus: Models.OrderStatus.Rejected,
@@ -472,7 +473,6 @@ class HuobiHttp {
 
         var site = (new URL(url)).hostname;
         let source = method+'\n' + site+'\n'+url.replace(this._baseUrl,'')+'\n'+query;
-        console.log(source);
         let signature = crypto.createHmac('sha256', this._secret).update(source).digest('base64');//digest('hex'); // set the HMAC hash header
         signature = encodeURIComponent(signature);
 
@@ -515,11 +515,6 @@ class HuobiHttp {
             }
             else {
                 try {
-                    console.log('REQUEST');
-                    console.log(url);
-                    console.log(msg);
-                    console.log('BODY');
-                    console.log(body);
                     var t = new Date();
                     var data = JSON.parse(body);
                     d.resolve(new Models.Timestamped(data, t));

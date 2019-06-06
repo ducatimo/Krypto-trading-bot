@@ -414,13 +414,16 @@ class HuobiHttp {
 
     postSigned = <TRequest, TResponse>(actionUrl: string, qs?: any): Q.Promise<Models.Timestamped<TResponse>> => {
         const url = this._baseUrl + "/" + actionUrl;
-        var sign = this.createSignature(url, {});
+        var sign = this.createSignature(url, {}, "POST");
         var opts = {
             timeout: this._timeout,
             url: url + '?' + sign,
-            qs: qs || undefined,
+            form: qs,
+            qs: undefined,
             method: "POST"
         };
+
+        console.log(opts);
 
         return this.doRequest<TResponse>(opts, url);
     };
@@ -453,6 +456,7 @@ class HuobiHttp {
 
         var site = (new URL(url)).hostname;
         let source = method+'\n' + site+'\n'+url.replace(this._baseUrl,'')+'\n'+query;
+        console.log(source);
         let signature = crypto.createHmac('sha256', this._secret).update(source).digest('base64');//digest('hex'); // set the HMAC hash header
         signature = encodeURIComponent(signature);
 

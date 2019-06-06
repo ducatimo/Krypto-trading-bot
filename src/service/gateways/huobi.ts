@@ -25,7 +25,7 @@ var Deque = require("collections/deque");
 
 interface HuobiMarketTradeResult {
     status:string;
-    data: HuobiMarketTrade;
+    data: HuobiMarketTrade[];
 }
 
 
@@ -91,11 +91,11 @@ class HuobiMarketDataGateway implements Interfaces.IMarketDataGateway {
     private _since: number = null;
     MarketTrade = new Utils.Evt<Models.GatewayMarketTrade>();
     private onTrades = (trades: Models.Timestamped<HuobiMarketTradeResult>) => {
-        _.forEach(trades.data.data.data, trade => {
-            var px = parseFloat(trade.price);
-            var sz = parseFloat(trade.amount);
+        _.forEach(trades.data.data, trade => {
+            var px = parseFloat(trade.data[0].price);
+            var sz = parseFloat(trade.data[0].amount);
             var time = moment.unix(trade.ts).toDate();
-            var side = decodeSide(trade.direction);
+            var side = decodeSide(trade.data[0].direction);
             var mt = new Models.GatewayMarketTrade(px, sz, time, this._since === null, side);
             this.MarketTrade.trigger(mt);
         });
